@@ -98,6 +98,12 @@ class OnPolicyRunner:
         )
 
         # store training configuration
+        self.upload_video = self.cfg["upload_video"]
+        if self.upload_video:
+            self.video_log_dir = os.path.join(log_dir, "videos", "train")
+            self.uploaded_videos = os.listdir(self.video_log_dir)
+        self.num_eval_envs = self.cfg["num_eval_envs"]
+        self.eval_env_ids = torch.arange(self.num_eval_envs).to(self.device)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
@@ -175,9 +181,10 @@ class OnPolicyRunner:
         ep_infos = []
         rewbuffer = deque(maxlen=100)
         lenbuffer = deque(maxlen=100)
+        csbuffer = deque(maxlen=100)
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
-
+        cur_episode_csuccess = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         # create buffers for logging extrinsic and intrinsic rewards
         if self.alg.rnd:
             erewbuffer = deque(maxlen=100)
@@ -236,13 +243,24 @@ class OnPolicyRunner:
                             cur_reward_sum += rewards
                         # Update episode length
                         cur_episode_length += 1
+
+                        # Update consective success
+                        if "consecutive_successes" in infos['log'].keys():
+                            cur_episode_csuccess = torch.maximum(cur_episode_csuccess, infos['log']['consecutive_successes'])
+                        
                         # Clear data for completed episodes
                         # -- common
-                        new_ids = (dones > 0).nonzero(as_tuple=False)
-                        rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                        lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-                        cur_reward_sum[new_ids] = 0
-                        cur_episode_length[new_ids] = 0
+                        new_ids = (dones > 0).nonzero(as_tuple=False).squeeze(-1)
+                        is_eval_env = new_ids < self.num_eval_envs # we simply use the first num_eval_envs envs as the eval envs
+                        if torch.any(is_eval_env):
+                            ids = new_ids[is_eval_env]
+                            rewbuffer.extend(cur_reward_sum[ids].cpu().numpy().tolist())
+                            lenbuffer.extend(cur_episode_length[ids].cpu().numpy().tolist())
+                            csbuffer.extend(cur_episode_csuccess[ids].cpu().numpy().tolist())
+
+                        cur_reward_sum[new_ids] = 0.0
+                        cur_episode_length[new_ids] = 0.0
+                        cur_episode_csuccess[new_ids] = 0.0
                         # -- intrinsic and extrinsic rewards
                         if self.alg.rnd:
                             erewbuffer.extend(cur_ereward_sum[new_ids][:, 0].cpu().numpy().tolist())
@@ -299,11 +317,14 @@ class OnPolicyRunner:
         ep_string = ""
         if locs["ep_infos"]:
             for key in locs["ep_infos"][0]:
+                if key == "consecutive_successes":
+                    continue
                 infotensor = torch.tensor([], device=self.device)
                 for ep_info in locs["ep_infos"]:
                     # handle scalar and zero dimensional tensor infos
                     if key not in ep_info:
                         continue
+                    
                     if not isinstance(ep_info[key], torch.Tensor):
                         ep_info[key] = torch.Tensor([ep_info[key]])
                     if len(ep_info[key].shape) == 0:
@@ -344,12 +365,14 @@ class OnPolicyRunner:
             # everything else
             self.writer.add_scalar("Train/mean_reward", statistics.mean(locs["rewbuffer"]), locs["it"])
             self.writer.add_scalar("Train/mean_episode_length", statistics.mean(locs["lenbuffer"]), locs["it"])
+            if len(locs["csbuffer"])> 0:
+                self.writer.add_scalar("Train/mean_consecutive_success", statistics.mean(locs["csbuffer"]), locs["it"])
             if self.logger_type != "wandb":  # wandb does not support non-integer x-axis logging
                 self.writer.add_scalar("Train/mean_reward/time", statistics.mean(locs["rewbuffer"]), self.tot_time)
                 self.writer.add_scalar(
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
-
+        
         str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
         if len(locs["rewbuffer"]) > 0:
@@ -372,6 +395,8 @@ class OnPolicyRunner:
             log_string += f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
             # -- episode info
             log_string += f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
+            if len(locs["csbuffer"]) > 0:
+                log_string += f"""{'Mean consecutive success:':>{pad}} {statistics.mean(locs['csbuffer']):.2f}\n"""
         else:
             log_string = (
                 f"""{'#' * width}\n"""
@@ -398,6 +423,18 @@ class OnPolicyRunner:
             )}\n"""
         )
         print(log_string)
+
+        # video logging
+        if self.logger_type == "wandb" and self.upload_video:
+            if len(os.listdir(self.video_log_dir)) > 0:
+                f = sorted(os.listdir(self.video_log_dir))[-1]
+                if f not in self.uploaded_videos:
+                    self.writer.wandb_add_video(
+                        tag='video', video_f=os.path.join(self.video_log_dir, f), global_step=locs['it']
+                    )
+                self.uploaded_videos.append(f)
+
+
 
     def save(self, path: str, infos=None):
         # -- Save model
