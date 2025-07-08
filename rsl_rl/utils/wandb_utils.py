@@ -55,6 +55,9 @@ class WandbSummaryWriter(SummaryWriter):
         )
         wandb.log({self._map_path(tag): scalar_value}, step=global_step)
 
+    def wandb_add_video(self, tag, video_f, global_step=None):
+        wandb.log({f'{tag}': wandb.Video(video_f)}, step=global_step)
+
     def stop(self):
         wandb.finish()
 
