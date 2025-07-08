@@ -21,18 +21,9 @@ class WandbSummaryWriter(SummaryWriter):
     def __init__(self, log_dir: str, flush_secs: int, cfg):
         super().__init__(log_dir, flush_secs)
 
-        # Get the run name
-        run_name = os.path.split(log_dir)[-1]
-
-        try:
-            project = cfg["wandb_project"]
-        except KeyError:
-            raise KeyError("Please specify wandb_project in the runner config, e.g. legged_gym.")
-
-        try:
-            entity = os.environ["WANDB_USERNAME"]
-        except KeyError:
-            entity = None
+        entity = cfg['wandb_kwargs']['entity']
+        project = cfg['wandb_kwargs']['project']
+        run_name = cfg['wandb_kwargs']['run_name']
 
         # Initialize wandb
         wandb.init(project=project, entity=entity, name=run_name)
