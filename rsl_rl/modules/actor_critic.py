@@ -25,6 +25,7 @@ class ActorCritic(nn.Module):
         activation="elu",
         init_noise_std=1.0,
         noise_std_type: str = "scalar",
+        zero_init: bool = False,
         **kwargs,
     ):
         if kwargs:
@@ -43,7 +44,12 @@ class ActorCritic(nn.Module):
         actor_layers.append(activation)
         for layer_index in range(len(actor_hidden_dims)):
             if layer_index == len(actor_hidden_dims) - 1:
-                actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], num_actions))
+                layer = nn.Linear(actor_hidden_dims[layer_index], num_actions)
+                if zero_init:
+                    print("use zero init for the last action layer")
+                    nn.init.constant_(layer.weight, 0.0)
+                    nn.init.constant_(layer.bias, 0.0)
+                actor_layers.append(layer)
             else:
                 actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], actor_hidden_dims[layer_index + 1]))
                 actor_layers.append(activation)
