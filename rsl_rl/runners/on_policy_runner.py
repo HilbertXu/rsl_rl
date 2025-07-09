@@ -263,8 +263,8 @@ class OnPolicyRunner:
                         cur_episode_csuccess[new_ids] = 0.0
                         # -- intrinsic and extrinsic rewards
                         if self.alg.rnd:
-                            erewbuffer.extend(cur_ereward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                            irewbuffer.extend(cur_ireward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                            erewbuffer.extend(cur_ereward_sum[new_ids].cpu().numpy().tolist())
+                            irewbuffer.extend(cur_ireward_sum[new_ids].cpu().numpy().tolist())
                             cur_ereward_sum[new_ids] = 0
                             cur_ireward_sum[new_ids] = 0
 
