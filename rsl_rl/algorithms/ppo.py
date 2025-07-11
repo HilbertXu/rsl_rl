@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 from itertools import chain
 
-from rsl_rl.modules import ActorCritic
+from rsl_rl.modules import ActorCritic, RunningStandardScaler
 from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import string_to_callable
@@ -35,6 +35,7 @@ class PPO:
         learning_rate=1e-3,
         max_grad_norm=1.0,
         use_clipped_value_loss=True,
+        value_normalization=False,
         schedule="fixed",
         desired_kl=0.01,
         device="cpu",
@@ -110,10 +111,14 @@ class PPO:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
+        self.value_normalization = value_normalization
         self.desired_kl = desired_kl
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        
+        self.value_normalizer = RunningStandardScaler(size=1, device=self.device)
+        
 
     def init_storage(
         self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, actions_shape
@@ -140,7 +145,11 @@ class PPO:
             self.transition.hidden_states = self.policy.get_hidden_states()
         # compute the actions and values
         self.transition.actions = self.policy.act(obs).detach()
-        self.transition.values = self.policy.evaluate(critic_obs).detach()
+        if self.value_normalization:
+            values = self.value_normalizer(self.policy.evaluate(critic_obs).detach(), inverse=True)
+        else:
+            values = self.policy.evaluate(critic_obs).detach()
+        self.transition.values = values
         self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.policy.action_mean.detach()
         self.transition.action_sigma = self.policy.action_std.detach()
@@ -181,9 +190,20 @@ class PPO:
     def compute_returns(self, last_critic_obs):
         # compute value for the last step
         last_values = self.policy.evaluate(last_critic_obs).detach()
+        if self.value_normalization:
+            last_values = self.value_normalizer(last_values, inverse=True)
+        
         self.storage.compute_returns(
             last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
         )
+        if not self.value_normalization:
+            
+            # 1. Update the value normalizer with the un-normalized returns
+            self.value_normalizer(self.storage.returns, train=True)
+            
+            # 2. Normalize the values and returns in storage for the PPO update step
+            self.storage.values = self.value_normalizer(self.storage.values)
+            self.storage.returns = self.value_normalizer(self.storage.returns)
 
     def update(self):  # noqa: C901
         mean_value_loss = 0

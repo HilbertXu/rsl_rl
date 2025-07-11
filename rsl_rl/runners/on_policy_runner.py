@@ -107,6 +107,7 @@ class OnPolicyRunner:
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
+        self.value_normalization = self.alg_cfg['value_normalization']
         if self.empirical_normalization:
             self.obs_normalizer = EmpiricalNormalization(shape=[num_obs], until=1.0e8).to(self.device)
             self.privileged_obs_normalizer = EmpiricalNormalization(shape=[num_privileged_obs], until=1.0e8).to(
@@ -349,6 +350,16 @@ class OnPolicyRunner:
 
         # -- Policy
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
+        
+        # -- Scalar
+        self.writer.add_scalar("Scalar/running_mean_mean", self.alg.value_normalizer.running_mean_mean.item(), locs["it"])
+        self.writer.add_scalar("Scalar/running_mean_median", self.alg.value_normalizer.running_mean_median.item(), locs["it"])
+        self.writer.add_scalar("Scalar/running_mean_min", self.alg.value_normalizer.running_mean_min.item(), locs["it"])
+        self.writer.add_scalar("Scalar/running_mean_max", self.alg.value_normalizer.running_mean_max.item(), locs["it"])
+        self.writer.add_scalar("Scalar/running_variance_mean", self.alg.value_normalizer.running_variance_mean.item(), locs["it"])
+        self.writer.add_scalar("Scalar/running_variance_median", self.alg.value_normalizer.running_variance_median.item(), locs["it"])
+        self.writer.add_scalar("Scalar/running_variance_min", self.alg.value_normalizer.running_variance_min.item(), locs["it"])
+        self.writer.add_scalar("Scalar/running_variance_max", self.alg.value_normalizer.running_variance_max.item(), locs["it"])
 
         # -- Performance
         self.writer.add_scalar("Perf/total_fps", fps, locs["it"])
@@ -452,6 +463,10 @@ class OnPolicyRunner:
         if self.empirical_normalization:
             saved_dict["obs_norm_state_dict"] = self.obs_normalizer.state_dict()
             saved_dict["privileged_obs_norm_state_dict"] = self.privileged_obs_normalizer.state_dict()
+        
+        # -- Save value normalizer if used
+        if self.value_normalization:
+            saved_dict["value_norm_state_dict"] = self.alg.value_normalizer.state_dict()
 
         # save model
         torch.save(saved_dict, path)
@@ -479,6 +494,12 @@ class OnPolicyRunner:
                 # an rl training. Thus the actor normalizer is loaded for the teacher model. The student's normalizer
                 # is not loaded, as the observation space could differ from the previous rl training.
                 self.privileged_obs_normalizer.load_state_dict(loaded_dict["obs_norm_state_dict"])
+        
+        if self.value_normalization:
+            if resumed_training:
+                self.alg.value_normalizer.load_state_dict(loaded_dict['value_norm_state_dict'])
+        
+        
         # -- load optimizer if used
         if load_optimizer and resumed_training:
             # -- algorithm optimizer
