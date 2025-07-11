@@ -170,15 +170,8 @@ class RunningStandardScaler(nn.Module):
         self.epsilon = epsilon
         self.clip_threshold = clip_threshold
         self.dtype = dtype
-        self.device = config.torch.parse_device(device)
+        self.device = device
         self.debug = debug
-
-        if type(size) is dict:
-            for k, v in size.items():
-                print(f"{k} size", v.shape)
-                size = v
-        else:
-            size = compute_space_size(size, occupied_size=True)
 
         print("Registering standard scaler with input size", size)
         self.register_buffer("running_mean", torch.zeros(size, dtype=self.dtype, device=self.device))
@@ -245,11 +238,7 @@ class RunningStandardScaler(nn.Module):
         :rtype: torch.Tensor
         """
 
-        if isinstance(x, LazyFrames):
-            x = x[:]
-
         if train:
-
             if x.dim() == 3:
                 input_mean = torch.mean(x, dim=(0, 1)).to(self.dtype)
                 input_var = torch.var(x, dim=(0, 1), unbiased=True).to(self.dtype)
@@ -265,7 +254,6 @@ class RunningStandardScaler(nn.Module):
 
         # scale back the data to the original representation
         if inverse:
-
             x = x.to(self.dtype)
             sqrt_variance = torch.sqrt(self.running_variance.float())
             clamped_x = torch.clamp(x, min=-self.clip_threshold, max=self.clip_threshold)

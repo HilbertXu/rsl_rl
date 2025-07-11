@@ -196,7 +196,7 @@ class PPO:
         self.storage.compute_returns(
             last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
         )
-        if not self.value_normalization:
+        if self.value_normalization:
             
             # 1. Update the value normalizer with the un-normalized returns
             self.value_normalizer(self.storage.returns, train=True)

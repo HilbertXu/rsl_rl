@@ -352,14 +352,14 @@ class OnPolicyRunner:
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
         
         # -- Scalar
-        self.writer.add_scalar("Scalar/running_mean_mean", self.alg.value_normalizer.running_mean_mean.item(), locs["it"])
-        self.writer.add_scalar("Scalar/running_mean_median", self.alg.value_normalizer.running_mean_median.item(), locs["it"])
-        self.writer.add_scalar("Scalar/running_mean_min", self.alg.value_normalizer.running_mean_min.item(), locs["it"])
-        self.writer.add_scalar("Scalar/running_mean_max", self.alg.value_normalizer.running_mean_max.item(), locs["it"])
-        self.writer.add_scalar("Scalar/running_variance_mean", self.alg.value_normalizer.running_variance_mean.item(), locs["it"])
-        self.writer.add_scalar("Scalar/running_variance_median", self.alg.value_normalizer.running_variance_median.item(), locs["it"])
-        self.writer.add_scalar("Scalar/running_variance_min", self.alg.value_normalizer.running_variance_min.item(), locs["it"])
-        self.writer.add_scalar("Scalar/running_variance_max", self.alg.value_normalizer.running_variance_max.item(), locs["it"])
+        self.writer.add_scalar("Scalar/running_mean_mean", self.alg.value_normalizer.running_mean_mean, locs["it"])
+        self.writer.add_scalar("Scalar/running_mean_median", self.alg.value_normalizer.running_mean_median, locs["it"])
+        self.writer.add_scalar("Scalar/running_mean_min", self.alg.value_normalizer.running_mean_min, locs["it"])
+        self.writer.add_scalar("Scalar/running_mean_max", self.alg.value_normalizer.running_mean_max, locs["it"])
+        self.writer.add_scalar("Scalar/running_variance_mean", self.alg.value_normalizer.running_variance_mean, locs["it"])
+        self.writer.add_scalar("Scalar/running_variance_median", self.alg.value_normalizer.running_variance_median, locs["it"])
+        self.writer.add_scalar("Scalar/running_variance_min", self.alg.value_normalizer.running_variance_min, locs["it"])
+        self.writer.add_scalar("Scalar/running_variance_max", self.alg.value_normalizer.running_variance_max, locs["it"])
 
         # -- Performance
         self.writer.add_scalar("Perf/total_fps", fps, locs["it"])
