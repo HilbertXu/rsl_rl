@@ -308,7 +308,7 @@ class OnPolicyRunner:
                 if mean_eval_returns > best_eval_returns:
                     best_eval_returns = mean_eval_returns
                 
-                if trial is not None and len(rewbuffer) > 0:
+                if trial is not None:
                     trial.report(mean_eval_returns, it)
                     if trial.should_prune():
                         return best_eval_returns, True
