@@ -138,7 +138,7 @@ class OnPolicyRunner:
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
 
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
+    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False, trial=None):  # noqa: C901
         # initialize writer
         if self.log_dir is not None and self.writer is None and not self.disable_logs:
             # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.
@@ -203,6 +203,7 @@ class OnPolicyRunner:
         # Start training
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
+        best_eval_returns = 0.0
         for it in range(start_iter, tot_iter):
             start = time.time()
             # Rollout
@@ -301,6 +302,19 @@ class OnPolicyRunner:
                 if self.logger_type in ["wandb", "neptune"] and git_file_paths:
                     for path in git_file_paths:
                         self.writer.save_file(path)
+
+            mean_eval_returns = statistics.mean(rewbuffer)
+            if mean_eval_returns > best_eval_returns:
+                best_eval_returns = mean_eval_returns
+            
+            if trial is not None and len(rewbuffer) > 0:
+                trial.report(mean_eval_returns, it)
+                if trial.should_prune():
+                    return best_eval_returns, True
+        
+        return best_eval_returns, False
+
+
 
         # Save the final model after training
         if self.log_dir is not None and not self.disable_logs:
