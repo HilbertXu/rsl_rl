@@ -303,14 +303,15 @@ class OnPolicyRunner:
                     for path in git_file_paths:
                         self.writer.save_file(path)
 
-            mean_eval_returns = statistics.mean(rewbuffer)
-            if mean_eval_returns > best_eval_returns:
-                best_eval_returns = mean_eval_returns
-            
-            if trial is not None and len(rewbuffer) > 0:
-                trial.report(mean_eval_returns, it)
-                if trial.should_prune():
-                    return best_eval_returns, True
+            if len(rewbuffer) > 0:
+                mean_eval_returns = statistics.mean(rewbuffer)
+                if mean_eval_returns > best_eval_returns:
+                    best_eval_returns = mean_eval_returns
+                
+                if trial is not None and len(rewbuffer) > 0:
+                    trial.report(mean_eval_returns, it)
+                    if trial.should_prune():
+                        return best_eval_returns, True
         
         return best_eval_returns, False
 
