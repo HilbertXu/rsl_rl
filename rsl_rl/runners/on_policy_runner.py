@@ -10,6 +10,7 @@ import statistics
 import time
 import torch
 from collections import deque
+from tqdm import tqdm
 
 import rsl_rl
 from rsl_rl.algorithms import PPO, Distillation
@@ -33,6 +34,7 @@ class OnPolicyRunner:
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
+        self.debug = train_cfg['debug']
 
         # check if multi-gpu is enabled
         self._configure_multi_gpu()
@@ -204,7 +206,11 @@ class OnPolicyRunner:
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
         best_eval_returns = 0.0
-        for it in range(start_iter, tot_iter):
+        if self.debug < 2:
+            pbar = tqdm(range(start_iter, tot_iter))
+        else:
+            pbar = range(start_iter, tot_iter)
+        for it in pbar:
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -302,6 +308,7 @@ class OnPolicyRunner:
                 if self.logger_type in ["wandb", "neptune"] and git_file_paths:
                     for path in git_file_paths:
                         self.writer.save_file(path)
+            
 
             if len(rewbuffer) > 0:
                 mean_eval_returns = statistics.mean(rewbuffer)
@@ -313,13 +320,15 @@ class OnPolicyRunner:
                     if trial.should_prune():
                         return best_eval_returns, True
         
-        return best_eval_returns, False
-
-
 
         # Save the final model after training
         if self.log_dir is not None and not self.disable_logs:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
+        
+        return best_eval_returns, False
+
+
+        
 
     def log(self, locs: dict, width: int = 80, pad: int = 35):
         # Compute the collection size
@@ -448,7 +457,14 @@ class OnPolicyRunner:
                 )
             )}\n"""
         )
-        print(log_string)
+        if self.debug == 2:
+            print(log_string)
+        elif self.debug == 1:
+            mean_rew = statistics.mean(locs['rewbuffer']) if len(locs['rewbuffer']) > 0 else 0.0
+            mean_cs = statistics.mean(locs['csbuffer']) if len(locs['csbuffer']) > 0 else 0.0
+            
+            locs['pbar'].set_description(f"rew: {mean_rew:.2f}, cs: {mean_cs:.2f}")
+        
 
         # video logging
         if self.logger_type == "wandb" and self.upload_video:
