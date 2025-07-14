@@ -252,7 +252,7 @@ class PPO:
             rnd_state_batch,
         ) in generator:
 
-            with torch.amp.autocast(enabled=self.enable_amp):
+            with torch.amp.autocast(device_type="cuda", enabled=self.enable_amp):
                 # number of augmentations per sample
                 # we start with 1 and increase it if we use symmetry augmentation
                 num_aug = 1
