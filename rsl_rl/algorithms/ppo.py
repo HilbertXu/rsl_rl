@@ -127,7 +127,7 @@ class PPO:
         print(f"Enable amp: {self.enable_amp}")
         # Initialize the gradient scaler.
         # The `enabled` flag makes it a no-op when AMP is disabled, simplifying the update loop.
-        self.scaler = torch.cuda.amp.GradScaler(enabled=enable_amp)
+        self.scaler = torch.amp.GradScaler(enabled=enable_amp)
         
 
     def init_storage(
