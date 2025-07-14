@@ -40,6 +40,7 @@ class PPO:
         desired_kl=0.01,
         device="cpu",
         normalize_advantage_per_mini_batch=False,
+        enable_amp=False,
         # RND parameters
         rnd_cfg: dict | None = None,
         # Symmetry parameters
@@ -117,7 +118,16 @@ class PPO:
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
         
+        # Value normalizer
         self.value_normalizer = RunningStandardScaler(size=1, device=self.device)
+
+        # --- START: AMP Implementation ---
+        # Add a flag to control AMP usage
+        self.enable_amp = enable_amp
+        print(f"Enable amp: {self.enable_amp}")
+        # Initialize the gradient scaler.
+        # The `enabled` flag makes it a no-op when AMP is disabled, simplifying the update loop.
+        self.scaler = torch.cuda.amp.GradScaler(enabled=enable_amp)
         
 
     def init_storage(
@@ -242,87 +252,88 @@ class PPO:
             rnd_state_batch,
         ) in generator:
 
-            # number of augmentations per sample
-            # we start with 1 and increase it if we use symmetry augmentation
-            num_aug = 1
-            # original batch size
-            original_batch_size = obs_batch.shape[0]
+            with torch.amp.autocast(enabled=self.enable_amp):
+                # number of augmentations per sample
+                # we start with 1 and increase it if we use symmetry augmentation
+                num_aug = 1
+                # original batch size
+                original_batch_size = obs_batch.shape[0]
 
-            # check if we should normalize advantages per mini batch
-            if self.normalize_advantage_per_mini_batch:
-                with torch.no_grad():
-                    advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
+                # check if we should normalize advantages per mini batch
+                if self.normalize_advantage_per_mini_batch:
+                    with torch.no_grad():
+                        advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
 
-            # Perform symmetric augmentation
-            if self.symmetry and self.symmetry["use_data_augmentation"]:
-                # augmentation using symmetry
-                data_augmentation_func = self.symmetry["data_augmentation_func"]
-                # returned shape: [batch_size * num_aug, ...]
-                obs_batch, actions_batch = data_augmentation_func(
-                    obs=obs_batch, actions=actions_batch, env=self.symmetry["_env"], obs_type="policy"
-                )
-                critic_obs_batch, _ = data_augmentation_func(
-                    obs=critic_obs_batch, actions=None, env=self.symmetry["_env"], obs_type="critic"
-                )
-                # compute number of augmentations per sample
-                num_aug = int(obs_batch.shape[0] / original_batch_size)
-                # repeat the rest of the batch
-                # -- actor
-                old_actions_log_prob_batch = old_actions_log_prob_batch.repeat(num_aug, 1)
-                # -- critic
-                target_values_batch = target_values_batch.repeat(num_aug, 1)
-                advantages_batch = advantages_batch.repeat(num_aug, 1)
-                returns_batch = returns_batch.repeat(num_aug, 1)
-
-            # Recompute actions log prob and entropy for current batch of transitions
-            # Note: we need to do this because we updated the policy with the new parameters
-            # -- actor
-            self.policy.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
-            actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
-            # -- critic
-            value_batch = self.policy.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
-            # -- entropy
-            # we only keep the entropy of the first augmentation (the original one)
-            mu_batch = self.policy.action_mean[:original_batch_size]
-            sigma_batch = self.policy.action_std[:original_batch_size]
-            entropy_batch = self.policy.entropy[:original_batch_size]
-
-            # KL
-            if self.desired_kl is not None and self.schedule == "adaptive":
-                with torch.inference_mode():
-                    kl = torch.sum(
-                        torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
-                        + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch))
-                        / (2.0 * torch.square(sigma_batch))
-                        - 0.5,
-                        axis=-1,
+                # Perform symmetric augmentation
+                if self.symmetry and self.symmetry["use_data_augmentation"]:
+                    # augmentation using symmetry
+                    data_augmentation_func = self.symmetry["data_augmentation_func"]
+                    # returned shape: [batch_size * num_aug, ...]
+                    obs_batch, actions_batch = data_augmentation_func(
+                        obs=obs_batch, actions=actions_batch, env=self.symmetry["_env"], obs_type="policy"
                     )
-                    kl_mean = torch.mean(kl)
+                    critic_obs_batch, _ = data_augmentation_func(
+                        obs=critic_obs_batch, actions=None, env=self.symmetry["_env"], obs_type="critic"
+                    )
+                    # compute number of augmentations per sample
+                    num_aug = int(obs_batch.shape[0] / original_batch_size)
+                    # repeat the rest of the batch
+                    # -- actor
+                    old_actions_log_prob_batch = old_actions_log_prob_batch.repeat(num_aug, 1)
+                    # -- critic
+                    target_values_batch = target_values_batch.repeat(num_aug, 1)
+                    advantages_batch = advantages_batch.repeat(num_aug, 1)
+                    returns_batch = returns_batch.repeat(num_aug, 1)
 
-                    # Reduce the KL divergence across all GPUs
-                    if self.is_multi_gpu:
-                        torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
-                        kl_mean /= self.gpu_world_size
+                # Recompute actions log prob and entropy for current batch of transitions
+                # Note: we need to do this because we updated the policy with the new parameters
+                # -- actor
+                self.policy.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
+                # -- critic
+                value_batch = self.policy.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
+                # -- entropy
+                # we only keep the entropy of the first augmentation (the original one)
+                mu_batch = self.policy.action_mean[:original_batch_size]
+                sigma_batch = self.policy.action_std[:original_batch_size]
+                entropy_batch = self.policy.entropy[:original_batch_size]
 
-                    # Update the learning rate
-                    # Perform this adaptation only on the main process
-                    # TODO: Is this needed? If KL-divergence is the "same" across all GPUs,
-                    #       then the learning rate should be the same across all GPUs.
-                    if self.gpu_global_rank == 0:
-                        if kl_mean > self.desired_kl * 2.0:
-                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-                        elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                # KL
+                if self.desired_kl is not None and self.schedule == "adaptive":
+                    with torch.inference_mode():
+                        kl = torch.sum(
+                            torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
+                            + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch))
+                            / (2.0 * torch.square(sigma_batch))
+                            - 0.5,
+                            axis=-1,
+                        )
+                        kl_mean = torch.mean(kl)
 
-                    # Update the learning rate for all GPUs
-                    if self.is_multi_gpu:
-                        lr_tensor = torch.tensor(self.learning_rate, device=self.device)
-                        torch.distributed.broadcast(lr_tensor, src=0)
-                        self.learning_rate = lr_tensor.item()
+                        # Reduce the KL divergence across all GPUs
+                        if self.is_multi_gpu:
+                            torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
+                            kl_mean /= self.gpu_world_size
 
-                    # Update the learning rate for all parameter groups
-                    for param_group in self.optimizer.param_groups:
-                        param_group["lr"] = self.learning_rate
+                        # Update the learning rate
+                        # Perform this adaptation only on the main process
+                        # TODO: Is this needed? If KL-divergence is the "same" across all GPUs,
+                        #       then the learning rate should be the same across all GPUs.
+                        if self.gpu_global_rank == 0:
+                            if kl_mean > self.desired_kl * 2.0:
+                                self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                            elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+                                self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+
+                        # Update the learning rate for all GPUs
+                        if self.is_multi_gpu:
+                            lr_tensor = torch.tensor(self.learning_rate, device=self.device)
+                            torch.distributed.broadcast(lr_tensor, src=0)
+                            self.learning_rate = lr_tensor.item()
+
+                        # Update the learning rate for all parameter groups
+                        for param_group in self.optimizer.param_groups:
+                            param_group["lr"] = self.learning_rate
 
             # Surrogate loss
             ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
@@ -389,26 +400,49 @@ class PPO:
                 mseloss = torch.nn.MSELoss()
                 rnd_loss = mseloss(predicted_embedding, target_embedding)
 
+            
             # Compute the gradients
             # -- For PPO
             self.optimizer.zero_grad()
-            loss.backward()
-            # -- For RND
+            # -- For RND (must also be zeroed before scaling)
             if self.rnd:
                 self.rnd_optimizer.zero_grad()  # type: ignore
-                rnd_loss.backward()
+
+            # --- START: AMP Implementation ---
+            # Scale the PPO loss and call backward to create scaled gradients
+            self.scaler.scale(loss).backward(retain_graph=True if self.rnd else False)
+
+            # Scale the RND loss (if used) and call backward to accumulate its scaled gradients
+            if self.rnd:
+                self.scaler.scale(rnd_loss).backward()
+                
+            # --- END: AMP Implementation ---
+
 
             # Collect gradients from all GPUs
             if self.is_multi_gpu:
                 self.reduce_parameters()
 
+           # --- START: AMP Implementation ---
+            # Unscale gradients before clipping them
+            self.scaler.unscale_(self.optimizer)
+            if self.rnd:
+                self.scaler.unscale_(self.rnd_optimizer)
+            # --- END: AMP Implementation ---
+            
             # Apply the gradients
             # -- For PPO
             nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-            self.optimizer.step()
+            # --- START: AMP Implementation ---
+            # The optimizer step is now called through the scaler
+            self.scaler.step(self.optimizer)
             # -- For RND
             if self.rnd_optimizer:
-                self.rnd_optimizer.step()
+                self.scaler.step(self.rnd_optimizer)
+            
+            # Update the scaler for the next iteration
+            self.scaler.update()
+            # --- END: AMP Implementation ---
 
             # Store the losses
             mean_value_loss += value_loss.item()
