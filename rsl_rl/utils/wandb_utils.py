@@ -24,9 +24,10 @@ class WandbSummaryWriter(SummaryWriter):
         entity = cfg['wandb_kwargs']['entity']
         project = cfg['wandb_kwargs']['project']
         run_name = cfg['wandb_kwargs']['run_name']
+        sweep = cfg['sweep']
 
         # Initialize wandb
-        wandb.init(project=project, entity=entity, name=run_name)
+        wandb.init(project=project, entity=entity, name=run_name, allow_val_change=sweep)
 
         # Add log directory to wandb
         wandb.config.update({"log_dir": log_dir})

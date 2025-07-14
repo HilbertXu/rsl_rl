@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import gc
 import statistics
 import time
 import torch
@@ -139,6 +140,10 @@ class OnPolicyRunner:
         self.tot_time = 0
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
+        
+        # @NOTE a little hack
+        # in sweep mode, we need the torch.no_grad() as context
+        self.sweep = self.cfg['sweep']
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False, trial=None):  # noqa: C901
         # initialize writer
@@ -213,7 +218,11 @@ class OnPolicyRunner:
         for it in pbar:
             start = time.time()
             # Rollout
-            with torch.inference_mode():
+            if self.sweep:
+                context = torch.no_grad()
+            else:
+                context = torch.inference_mode()
+            with context:
                 for _ in range(self.num_steps_per_env):
                     # Sample actions
                     actions = self.alg.act(obs, privileged_obs)
@@ -254,7 +263,7 @@ class OnPolicyRunner:
 
                         # Update consective success
                         if "consecutive_successes" in infos['log'].keys():
-                            cur_episode_csuccess = torch.maximum(cur_episode_csuccess, infos['log']['consecutive_successes'])
+                            cur_episode_csuccess = torch.maximum(cur_episode_csuccess, infos['log']['consecutive_successes'].clone().detach())
                         
                         # Clear data for completed episodes
                         # -- common
@@ -310,8 +319,8 @@ class OnPolicyRunner:
                         self.writer.save_file(path)
             
 
-            if len(rewbuffer) > 0:
-                mean_eval_returns = statistics.mean(rewbuffer)
+            if len(csbuffer) > 0:
+                mean_eval_returns = statistics.mean(csbuffer)
                 if mean_eval_returns > best_eval_returns:
                     best_eval_returns = mean_eval_returns
                 
@@ -626,3 +635,31 @@ class OnPolicyRunner:
         torch.distributed.init_process_group(backend="nccl", rank=self.gpu_global_rank, world_size=self.gpu_world_size)
         # set device to the local rank
         torch.cuda.set_device(self.gpu_local_rank)
+    
+    
+    def close(self):
+        """Cleans up the runner, environment, and logs, and releases GPU memory."""
+        print("Closing OnPolicyRunner...")
+        # 1. Close the environment
+        if self.env is not None:
+            self.env.close()
+
+        # 2. Close the logger
+        if self.writer is not None:
+            self.writer.close()
+
+        # 3. Destroy the distributed process group
+        if self.is_distributed:
+            torch.distributed.destroy_process_group()
+
+        # 4. Explicitly delete large torch objects
+        del self.alg
+        del self.obs_normalizer
+        del self.privileged_obs_normalizer
+        
+        # 5. Run Python's garbage collector and clear PyTorch's CUDA cache
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        print("OnPolicyRunner closed successfully.")
